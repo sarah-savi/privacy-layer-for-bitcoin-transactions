@@ -1,16 +1,8 @@
-;; Title: Privacy Pool Implementation for Bitcoin Transactions
+;; Title: Secure Privacy Pool Implementation for Bitcoin Transactions
 ;; 
 ;; Summary:
-;; A privacy-preserving pool implementation that enables confidential Bitcoin transactions
-;; using zero-knowledge proofs and Merkle trees. This contract implements the SIP-010
-;; fungible token standard for handling deposits and withdrawals.
-;;
-;; Description:
-;; - Implements a zero-knowledge deposit and withdrawal system
-;; - Uses a Merkle tree (height: 20) for commitment storage
-;; - Prevents double-spending through nullifier tracking
-;; - Supports fungible token deposits/withdrawals via SIP-010
-;; - Includes comprehensive proof verification
+;; A security-hardened privacy-preserving pool implementation that enables confidential 
+;; Bitcoin transactions using zero-knowledge proofs and Merkle trees.
 
 ;; Constants
 ;;
@@ -23,10 +15,16 @@
 (define-constant ERR-NULLIFIER-ALREADY-EXISTS (err u1005))
 (define-constant ERR-INVALID-PROOF (err u1006))
 (define-constant ERR-TREE-FULL (err u1007))
+(define-constant ERR-INVALID-TOKEN (err u1008))
+(define-constant ERR-INVALID-RECIPIENT (err u1009))
+(define-constant ERR-INVALID-ROOT (err u1010))
+(define-constant ERR-ZERO-AMOUNT (err u1011))
 
 ;; Pool configuration
 (define-constant MERKLE-TREE-HEIGHT u20)
 (define-constant ZERO-VALUE 0x0000000000000000000000000000000000000000000000000000000000000000)
+(define-constant MIN-DEPOSIT-AMOUNT u1000000) ;; Minimum deposit amount to prevent dust attacks
+(define-constant MAX-DEPOSIT-AMOUNT u1000000000000) ;; Maximum deposit amount for safety
 
 ;; SIP-010 Trait Definition
 (define-trait ft-trait
@@ -42,8 +40,10 @@
 )
 
 ;; Data Variables
+(define-data-var contract-owner principal tx-sender)
 (define-data-var current-root (buff 32) ZERO-VALUE)
 (define-data-var next-index uint u0)
+(define-data-var allowed-token (optional principal) none)
 
 ;; Storage Maps
 (define-map deposits 
@@ -69,7 +69,28 @@
 )
 
 (define-private (is-valid-hash? (hash (buff 32)))
-    (not (is-eq hash ZERO-VALUE))
+    (and 
+        (not (is-eq hash ZERO-VALUE))
+        (is-eq (len hash) u32)
+    )
+)
+
+(define-private (validate-token (token <ft-trait>))
+    (match (var-get allowed-token)
+        allowed-principal (if (is-eq (contract-of token) allowed-principal)
+                            (ok true)
+                            ERR-INVALID-TOKEN)
+        ERR-INVALID-TOKEN
+    )
+)
+
+(define-private (validate-amount (amount uint))
+    (if (and 
+        (>= amount MIN-DEPOSIT-AMOUNT)
+        (<= amount MAX-DEPOSIT-AMOUNT))
+        (ok true)
+        ERR-INVALID-AMOUNT
+    )
 )
 
 (define-private (get-tree-node (level uint) (index uint))
@@ -92,12 +113,15 @@
         (current-hash (get-tree-node level index))
         (sibling-hash (get-tree-node level sibling-index))
     )
-        (set-tree-node 
-            (+ level u1) 
-            parent-index 
-            (if is-right-child
-                (hash-combine sibling-hash current-hash)
-                (hash-combine current-hash sibling-hash)))
+        (asserts! (is-valid-hash? current-hash) ERR-INVALID-COMMITMENT)
+        (ok (begin
+            (set-tree-node 
+                (+ level u1) 
+                parent-index 
+                (if is-right-child
+                    (hash-combine sibling-hash current-hash)
+                    (hash-combine current-hash sibling-hash)))
+            true))
     )
 )
 
@@ -112,7 +136,8 @@
             current-hash: combined-hash,
             is-valid: (and 
                 (get is-valid accumulator) 
-                (is-valid-hash? combined-hash))
+                (is-valid-hash? combined-hash)
+                (is-valid-hash? proof-element))
         }
     )
 )
@@ -126,6 +151,9 @@
             proof
             {current-hash: leaf-hash, is-valid: true}))
     )
+        (asserts! (is-valid-hash? leaf-hash) ERR-INVALID-PROOF)
+        (asserts! (is-valid-hash? root) ERR-INVALID-ROOT)
+        (asserts! (is-eq root (var-get current-root)) ERR-INVALID-ROOT)
         (if (get is-valid proof-result)
             (ok true)
             ERR-INVALID-PROOF)
@@ -142,22 +170,31 @@
     (let (
         (leaf-index (var-get next-index))
     )
-        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        ;; Input validation
+        (try! (validate-amount amount))
         (asserts! (not (is-eq commitment ZERO-VALUE)) ERR-INVALID-COMMITMENT)
         (asserts! (< leaf-index (pow u2 MERKLE-TREE-HEIGHT)) ERR-TREE-FULL)
+        (try! (validate-token token))
         
-        (try! (contract-call? token transfer amount tx-sender (as-contract tx-sender) none))
+        ;; Perform token transfer
+        (try! (contract-call? token transfer 
+            amount 
+            tx-sender 
+            (as-contract tx-sender) 
+            none))
         
+        ;; Update Merkle tree
         (set-tree-node u0 leaf-index commitment)
         
-        ;; Update Merkle tree levels
-        (update-parent-at-level u0 leaf-index)
-        (update-parent-at-level u1 (/ leaf-index u2))
-        (update-parent-at-level u2 (/ leaf-index u4))
-        (update-parent-at-level u3 (/ leaf-index u8))
-        (update-parent-at-level u4 (/ leaf-index u16))
-        (update-parent-at-level u5 (/ leaf-index u32))
+        ;; Update Merkle tree levels - now with proper error handling
+        (try! (update-parent-at-level u0 leaf-index))
+        (try! (update-parent-at-level u1 (/ leaf-index u2)))
+        (try! (update-parent-at-level u2 (/ leaf-index u4)))
+        (try! (update-parent-at-level u3 (/ leaf-index u8)))
+        (try! (update-parent-at-level u4 (/ leaf-index u16)))
+        (try! (update-parent-at-level u5 (/ leaf-index u32)))
         
+        ;; Record deposit
         (map-set deposits 
             {commitment: commitment}
             {
@@ -166,6 +203,7 @@
             })
         
         (var-set next-index (+ leaf-index u1))
+        (var-set current-root (get-tree-node MERKLE-TREE-HEIGHT u0))
         
         (ok leaf-index)
     )
@@ -179,14 +217,49 @@
     (token <ft-trait>)
     (amount uint))
     (begin
-        (asserts! (is-none (map-get? nullifiers {nullifier: nullifier})) ERR-NULLIFIER-ALREADY-EXISTS)
+        ;; Input validation
+        (asserts! (is-valid-hash? nullifier) ERR-INVALID-PROOF)
+        (asserts! (is-valid-hash? root) ERR-INVALID-ROOT)
+        (try! (validate-amount amount))
+        (try! (validate-token token))
         
+        ;; Check nullifier hasn't been used
+        (asserts! (is-none (map-get? nullifiers {nullifier: nullifier})) 
+            ERR-NULLIFIER-ALREADY-EXISTS)
+        
+        ;; Verify the Merkle proof
         (try! (verify-merkle-proof nullifier proof root))
         
+        ;; Mark nullifier as used
         (map-set nullifiers {nullifier: nullifier} {used: true})
         
-        (try! (as-contract (contract-call? token transfer amount tx-sender recipient none)))
+        ;; Transfer tokens to recipient
+        (try! (as-contract (contract-call? token transfer 
+            amount 
+            tx-sender 
+            recipient 
+            none)))
         
+        (ok true)
+    )
+)
+
+;; Admin Functions
+;;
+
+(define-public (set-allowed-token (token-principal (optional principal)))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (var-set allowed-token token-principal)
+        (ok true)
+    )
+)
+
+(define-public (transfer-ownership (new-owner principal))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (asserts! (not (is-eq new-owner (var-get contract-owner))) ERR-NOT-AUTHORIZED)
+        (var-set contract-owner new-owner)
         (ok true)
     )
 )
