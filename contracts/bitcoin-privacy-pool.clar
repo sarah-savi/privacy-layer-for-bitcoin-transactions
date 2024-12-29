@@ -40,3 +40,23 @@
         (get-token-uri () (response (optional (string-utf8 256)) uint))
     )
 )
+
+;; Data Variables
+(define-data-var current-root (buff 32) ZERO-VALUE)
+(define-data-var next-index uint u0)
+
+;; Storage Maps
+(define-map deposits 
+    {commitment: (buff 32)} 
+    {leaf-index: uint, timestamp: uint}
+)
+
+(define-map nullifiers 
+    {nullifier: (buff 32)} 
+    {used: bool}
+)
+
+(define-map merkle-tree 
+    {level: uint, index: uint} 
+    {hash: (buff 32)}
+)
