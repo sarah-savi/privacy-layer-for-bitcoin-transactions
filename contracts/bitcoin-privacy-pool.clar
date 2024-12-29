@@ -170,3 +170,23 @@
         (ok leaf-index)
     )
 )
+
+(define-public (withdraw
+    (nullifier (buff 32))
+    (root (buff 32))
+    (proof (list 20 (buff 32)))
+    (recipient principal)
+    (token <ft-trait>)
+    (amount uint))
+    (begin
+        (asserts! (is-none (map-get? nullifiers {nullifier: nullifier})) ERR-NULLIFIER-ALREADY-EXISTS)
+        
+        (try! (verify-merkle-proof nullifier proof root))
+        
+        (map-set nullifiers {nullifier: nullifier} {used: true})
+        
+        (try! (as-contract (contract-call? token transfer amount tx-sender recipient none)))
+        
+        (ok true)
+    )
+)
