@@ -60,3 +60,26 @@
     {level: uint, index: uint} 
     {hash: (buff 32)}
 )
+
+;; Private Functions
+;;
+
+(define-private (hash-combine (left (buff 32)) (right (buff 32)))
+    (sha256 (concat left right))
+)
+
+(define-private (is-valid-hash? (hash (buff 32)))
+    (not (is-eq hash ZERO-VALUE))
+)
+
+(define-private (get-tree-node (level uint) (index uint))
+    (default-to 
+        ZERO-VALUE
+        (get hash (map-get? merkle-tree {level: level, index: index})))
+)
+
+(define-private (set-tree-node (level uint) (index uint) (hash (buff 32)))
+    (map-set merkle-tree
+        {level: level, index: index}
+        {hash: hash})
+)
