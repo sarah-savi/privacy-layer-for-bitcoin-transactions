@@ -131,3 +131,42 @@
             ERR-INVALID-PROOF)
     )
 )
+
+;; Public Functions
+;;
+
+(define-public (deposit 
+    (commitment (buff 32))
+    (amount uint)
+    (token <ft-trait>))
+    (let (
+        (leaf-index (var-get next-index))
+    )
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (not (is-eq commitment ZERO-VALUE)) ERR-INVALID-COMMITMENT)
+        (asserts! (< leaf-index (pow u2 MERKLE-TREE-HEIGHT)) ERR-TREE-FULL)
+        
+        (try! (contract-call? token transfer amount tx-sender (as-contract tx-sender) none))
+        
+        (set-tree-node u0 leaf-index commitment)
+        
+        ;; Update Merkle tree levels
+        (update-parent-at-level u0 leaf-index)
+        (update-parent-at-level u1 (/ leaf-index u2))
+        (update-parent-at-level u2 (/ leaf-index u4))
+        (update-parent-at-level u3 (/ leaf-index u8))
+        (update-parent-at-level u4 (/ leaf-index u16))
+        (update-parent-at-level u5 (/ leaf-index u32))
+        
+        (map-set deposits 
+            {commitment: commitment}
+            {
+                leaf-index: leaf-index,
+                timestamp: block-height
+            })
+        
+        (var-set next-index (+ leaf-index u1))
+        
+        (ok leaf-index)
+    )
+)
