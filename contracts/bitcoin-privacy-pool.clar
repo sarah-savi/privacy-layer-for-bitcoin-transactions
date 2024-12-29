@@ -116,3 +116,18 @@
         }
     )
 )
+
+(define-private (verify-merkle-proof 
+    (leaf-hash (buff 32))
+    (proof (list 20 (buff 32)))
+    (root (buff 32)))
+    (let (
+        (proof-result (fold verify-proof-level
+            proof
+            {current-hash: leaf-hash, is-valid: true}))
+    )
+        (if (get is-valid proof-result)
+            (ok true)
+            ERR-INVALID-PROOF)
+    )
+)
